@@ -11,9 +11,8 @@ import {PriceMath} from "../src/libraries/PriceMath.sol";
 import {IUniswapV3Pool} from "../src/interfaces/IUniswapV3.sol";
 
 /// @notice Griefing / MEV hardening: pool pre-creation cannot block launches, and the protocol's own swaps
-///         (fee conversion, buyback) can neither be filled at a manipulated price nor be profitably sandwiched.
+///         (fee conversion) can neither be filled at a manipulated price nor be profitably sandwiched.
 contract GuardTest is Base {
-    address constant DEAD = 0x000000000000000000000000000000000000dEaD;
     address attacker = makeAddr("attacker");
 
     function setUp() public override {
@@ -28,16 +27,16 @@ contract GuardTest is Base {
     // ------------------------------------------------------------ TickMath port
 
     /// @dev Our 0.8 TickMath must agree with the tick the (official, vendored) pool bytecode derives from a price:
-    ///      ratio(tick) <= sqrtP < ratio(tick + 1), across orientations, market caps and after trades.
+    ///      ratio(tick) <= sqrtP < ratio(tick + 1), across orientations and after trades of very different sizes
+    ///      (the opening mcap is a constant since v2.11, so the price range is swept with buys instead).
     function test_tickMath_matchesPoolAcrossPrices() public {
-        uint256[4] memory mcaps = [uint256(500e6), 5_000e6, 1_000_000e6, 10_000_000e6];
-        for (uint256 i; i < mcaps.length; ++i) {
-            setStartMcap(mcaps[i]);
-            for (uint256 k; k < 3; ++k) {
-                (address token, address pool) = doLaunch(creator, string.concat("TM", vm.toString(i * 3 + k)), 0);
+        uint256[6] memory buys = [uint256(50e6), 200e6, 900e6, 5_000e6, 40_000e6, 300_000e6];
+        for (uint256 i; i < buys.length; ++i) {
+            for (uint256 k; k < 2; ++k) {
+                (address token, address pool) = doLaunch(creator, string.concat("TM", vm.toString(i * 2 + k)), 0);
                 _assertTickConsistent(pool);
                 vm.roll(block.number + 30);
-                buy(buyer, token, 200e6 + k * 700e6);
+                buy(buyer, token, buys[i]);
                 _assertTickConsistent(pool);
                 vm.roll(block.number + 1);
             }
@@ -141,79 +140,6 @@ contract GuardTest is Base {
             assertGt(spotMcap(token, pool) * 10_000, before * 9_800);
         }
         assertEq(locker.unconvertedTax(token), 0, "fully drained over time");
-    }
-
-    // ------------------------------------------------------------ Treasury: sliced buyback + TWAP floor
-
-    function _platformToken() internal returns (address token, address pool) {
-        (token, pool) = doLaunch(creator, "ARCL", 0);
-        vm.roll(block.number + 30);
-        vm.prank(owner);
-        treasury.configure(token, 10_000);
-    }
-
-    function test_treasury_buybackIsSlicedWithCooldown() public {
-        (address token, address pool) = _platformToken();
-        usdc.mint(address(treasury), 2_000e6);
-        vm.warp(block.timestamp + 60);
-
-        uint256 m0 = spotMcap(token, pool);
-        treasury.execute(0); // 1520 → eco, 80 → dev, 400 reserved, first slice bought
-        assertEq(usdc.balanceOf(eco), 1_520e6 + 1e6); // + the ARCL creation fee
-        assertEq(usdc.balanceOf(dev), 80e6);
-        uint256 firstSlice = treasury.totalBoughtBack();
-        assertGt(firstSlice, 0);
-        assertLt(firstSlice, 400e6, "not everything in one go");
-        assertEq(treasury.buybackReserve(), 400e6 - firstSlice);
-        // first trade ever also crosses the ~2% gap between the opening tick and the position's lower tick
-        assertLt(spotMcap(token, pool) * 10_000, m0 * 10_400, "first slice: 2% launch gap + <2% impact");
-
-        vm.expectRevert(abi.encodeWithSelector(Treasury.TooSoon.selector, block.timestamp + 10 minutes));
-        treasury.buyback(0);
-
-        uint256 slices = 1;
-        while (treasury.buybackReserve() > 0) {
-            vm.warp(block.timestamp + 10 minutes);
-            uint256 before = spotMcap(token, pool);
-            treasury.buyback(0);
-            assertLt(spotMcap(token, pool) * 10_000, before * 10_250, "each slice moves the price < 2.5%");
-            slices++;
-        }
-        assertGt(slices, 3, "the 400 USDC took several slices");
-        assertEq(treasury.totalBoughtBack(), 400e6);
-        assertGt(LaunchToken(token).balanceOf(DEAD), 0);
-
-        vm.warp(block.timestamp + 10 minutes);
-        vm.expectRevert(Treasury.NothingToDo.selector);
-        treasury.buyback(0);
-    }
-
-    function test_treasury_buybackRefusesManipulatedPrice() public {
-        (address token,) = _platformToken();
-        usdc.mint(address(treasury), 500e6);
-        vm.warp(block.timestamp + 60);
-        treasury.execute(0);
-        assertGt(treasury.buybackReserve(), 0);
-        vm.warp(block.timestamp + 15 minutes); // TWAP at the honest price
-
-        // attacker pumps the price 3x inside its own tx, then calls buyback(0) hoping we buy high
-        buy(attacker, token, 8_000e6);
-        vm.expectRevert(); // router: Too little received (TWAP floor)
-        treasury.buyback(0);
-
-        // unwind; once the price is honest again the slice goes through
-        vm.warp(block.timestamp + 15 minutes);
-        sell(attacker, token, LaunchToken(token).balanceOf(attacker));
-        vm.warp(block.timestamp + 15 minutes);
-        uint256 r0 = treasury.buybackReserve();
-        treasury.buyback(0);
-        assertLt(treasury.buybackReserve(), r0);
-    }
-
-    function test_treasury_configureNeedsOurPool() public {
-        vm.prank(owner);
-        vm.expectRevert(Treasury.NoPool.selector);
-        treasury.configure(makeAddr("random"), 10_000);
     }
 
     // ------------------------------------------------------------ SwapGuard math sanity

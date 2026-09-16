@@ -54,22 +54,16 @@ contract LaunchFactory is Ownable, ReentrancyGuard, IUniswapV3SwapCallback {
     /// @dev Where creation fees are sent (the ecosystem multisig). Fixed at deployment.
     address public immutable feeRecipient;
 
-    // ---------------------------------------------------------------- launch params (owner-tunable, new launches only)
-    // Every one of these is bounded so that even a compromised owner key can only make future launches less
-    // attractive, never break trading or touch anyone's money. See setLaunchParams.
-    uint256 public graduationThreshold = 10_000e6; // USDC in pool
-    uint256 public protectionBlocks = 20; // ~10s on Arc
-    uint16 public maxHoldBps = 500; // 5%
-    uint16 public maxBuyBps = 550; // 5.5%
-    /// @dev Opening market cap for every new launch, in USDC (6 decimals).
-    uint256 public startMcapUsdc = 5_000e6;
-    uint256 public constant MIN_START_MCAP = 500e6;
-    uint256 public constant MAX_START_MCAP = 10_000_000e6;
-    uint256 public constant MIN_GRADUATION = 1_000e6;
-    /// @dev Anti-snipe window can never exceed ~1 hour of Arc blocks, so caps always lift.
-    uint256 public constant MAX_PROTECTION_BLOCKS = 7_200;
-    /// @dev Caps can never be set so low that a launch (or its creator's first buy) becomes untradeable.
-    uint16 public constant MIN_CAP_BPS = 100; // 1%
+    // ---------------------------------------------------------------- launch params (constants, v2.11)
+    // 9.16 boss: nothing about a launch is tunable any more. There is no setter and no owner-only function left on
+    // this contract; `owner()` is kept only as the identity the backend / admin UI recognises. Changing any of
+    // these means deploying a new factory. Getter names are unchanged so the indexer / web ABI still reads them.
+    uint256 public constant graduationThreshold = 10_000e6; // USDC in pool
+    uint256 public constant protectionBlocks = 20; // ~10s on Arc
+    uint16 public constant maxHoldBps = 500; // 5%
+    uint16 public constant maxBuyBps = 550; // 5.5%
+    /// @dev Opening market cap for every launch, in USDC (6 decimals).
+    uint256 public constant startMcapUsdc = 5_000e6;
 
     // ---------------------------------------------------------------- state
     struct Launch {
@@ -123,10 +117,6 @@ contract LaunchFactory is Ownable, ReentrancyGuard, IUniswapV3SwapCallback {
     event TaxConfigured(
         address indexed token, uint16 buyTaxBps, uint16 sellTaxBps, address marketingWallet, address teamWallet, uint16 marketingBps
     );
-    event ParamsUpdated();
-
-    error StartMcapOutOfRange(uint256 mcap);
-    error ParamOutOfRange();
     error TaxOutOfRange();
     error ZeroAddress();
     error NoLiquidity();
@@ -157,31 +147,6 @@ contract LaunchFactory is Ownable, ReentrancyGuard, IUniswapV3SwapCallback {
         locker = FeeLocker(locker_);
         treasury = treasury_;
         feeRecipient = feeRecipient_;
-    }
-
-    // ---------------------------------------------------------------- admin (affects new launches only)
-
-    /// @notice The only tunable knobs. Bounded on purpose: a hostile owner can at worst make new launches open at
-    ///         an odd market cap or keep the anti-snipe caps for an hour — never block trading of an existing token,
-    ///         never move funds. Existing tokens snapshot these values at launch and are unaffected.
-    function setLaunchParams(
-        uint256 graduationThreshold_,
-        uint256 protectionBlocks_,
-        uint16 maxHoldBps_,
-        uint16 maxBuyBps_,
-        uint256 startMcapUsdc_
-    ) external onlyOwner {
-        if (maxHoldBps_ < MIN_CAP_BPS || maxHoldBps_ > 10_000 || maxBuyBps_ < MIN_CAP_BPS || maxBuyBps_ > 10_000) {
-            revert ParamOutOfRange();
-        }
-        if (protectionBlocks_ > MAX_PROTECTION_BLOCKS || graduationThreshold_ < MIN_GRADUATION) revert ParamOutOfRange();
-        if (startMcapUsdc_ < MIN_START_MCAP || startMcapUsdc_ > MAX_START_MCAP) revert StartMcapOutOfRange(startMcapUsdc_);
-        graduationThreshold = graduationThreshold_;
-        protectionBlocks = protectionBlocks_;
-        maxHoldBps = maxHoldBps_;
-        maxBuyBps = maxBuyBps_;
-        startMcapUsdc = startMcapUsdc_;
-        emit ParamsUpdated();
     }
 
     // ---------------------------------------------------------------- launch

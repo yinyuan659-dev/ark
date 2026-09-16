@@ -26,6 +26,7 @@ abstract contract Base is Test {
     address creator = makeAddr("creator");
     address buyer = makeAddr("buyer");
     address eco = makeAddr("eco");
+    address buybackFund = makeAddr("buybackFund");
     address dev = makeAddr("dev");
 
     function setUp() public virtual {
@@ -40,7 +41,7 @@ abstract contract Base is Test {
         router = ISwapRouter(deployCode("vendor/uniswap-v3/SwapRouter.json", abi.encode(address(uni), address(usdc))));
         quoter = deployCode("vendor/uniswap-v3/QuoterV2.json", abi.encode(address(uni), address(usdc)));
 
-        treasury = new Treasury(address(usdc), address(router), address(uni), eco, dev, owner);
+        treasury = new Treasury(address(usdc), address(router), eco, buybackFund, dev, owner);
         locker = new FeeLocker(address(nfpm), address(router), address(treasury), owner);
         factory = new LaunchFactory(
             address(uni), address(nfpm), address(router), address(usdc), address(locker), address(treasury), eco, owner
@@ -138,16 +139,6 @@ abstract contract Base is Test {
         LaunchFactory.LaunchParams memory p = launchParams(sym, initialBuy);
         vm.prank(who);
         (token, pool,) = factory.launch(p);
-    }
-
-    /// @dev Admin helper: change only the opening market cap, keep the other params at their defaults.
-    function setStartMcap(uint256 mcapUsdc) internal {
-        uint256 thr = factory.graduationThreshold();
-        uint256 prot = factory.protectionBlocks();
-        uint16 hold = factory.maxHoldBps();
-        uint16 buyCap = factory.maxBuyBps();
-        vm.prank(owner);
-        factory.setLaunchParams(thr, prot, hold, buyCap, mcapUsdc);
     }
 
     function buy(address who, address token, uint256 usdcIn) internal returns (uint256 out) {

@@ -12,16 +12,21 @@ import {LaunchFactory} from "../src/LaunchFactory.sol";
 ///   OWNER    — admin (defaults to deployer); transferOwnership to the Safe once mainnet checks pass
 ///   ECO_FUND — ecosystem multisig (defaults to deployer). IMMUTABLE: receives 76% of protocol revenue (0.19% of
 ///              every trade) and every creation fee; nobody can change it after deployment → on mainnet the Safe.
+///   BUYBACK_FUND — buyback multisig. IMMUTABLE: receives 20% of protocol revenue (0.05% of every trade); the project
+///              buys back / burns from there by hand. Defaults to the placeholder below (2026-09-14) until the project
+///              hands over the real Safe (expected 2026-09-16) → pass BUYBACK_FUND=<Safe> on mainnet.
 ///   DEV_FUND — development team wallet, single address. IMMUTABLE: receives 4% of protocol revenue (0.01% of every
 ///              trade). Defaults to the team's address below (same on testnet and mainnet, per the boss 2026-09-07).
 contract Deploy is Script {
     address internal constant DEV_TEAM = 0x14EDF5b1D23FA8A66a533fdd7EBFDe5C87d706d3;
+    address internal constant BUYBACK_PLACEHOLDER = 0x1a0a4960042D94857BC3448099Cb4FD6C7d48d75;
 
     struct Cfg {
         address deployer;
         address usdc;
         address owner;
         address ecoFund;
+        address buybackFund;
         address devFund;
     }
 
@@ -42,13 +47,15 @@ contract Deploy is Script {
         c.usdc = vm.envOr("USDC", address(0x3600000000000000000000000000000000000000));
         c.owner = vm.envOr("OWNER", c.deployer);
         c.ecoFund = vm.envOr("ECO_FUND", c.deployer);
+        c.buybackFund = vm.envOr("BUYBACK_FUND", BUYBACK_PLACEHOLDER);
         c.devFund = vm.envOr("DEV_FUND", DEV_TEAM);
 
         vm.startBroadcast(pk);
         Out memory o = _deploy(c);
         vm.stopBroadcast();
 
-        _write(c, o, vm.envOr("OUT_FILE", string("deployments/arc-testnet.json")));
+        string memory defaultOut = block.chainid == 5042 ? "deployments/arc-mainnet.json" : "deployments/arc-testnet.json";
+        _write(c, o, vm.envOr("OUT_FILE", defaultOut));
     }
 
     function _deploy(Cfg memory c) internal returns (Out memory o) {
@@ -60,7 +67,7 @@ contract Deploy is Script {
         o.router = deployCode("vendor/uniswap-v3/SwapRouter.json", abi.encode(o.uniFactory, c.usdc));
         o.quoter = deployCode("vendor/uniswap-v3/QuoterV2.json", abi.encode(o.uniFactory, c.usdc));
 
-        o.treasury = address(new Treasury(c.usdc, o.router, o.uniFactory, c.ecoFund, c.devFund, c.owner));
+        o.treasury = address(new Treasury(c.usdc, o.router, c.ecoFund, c.buybackFund, c.devFund, c.owner));
         FeeLocker locker = new FeeLocker(o.nfpm, o.router, o.treasury, c.owner);
         o.locker = address(locker);
         o.factory = address(
@@ -76,6 +83,7 @@ contract Deploy is Script {
         vm.serializeAddress(j, "deployer", c.deployer);
         vm.serializeAddress(j, "owner", c.owner);
         vm.serializeAddress(j, "ecoFund", c.ecoFund);
+        vm.serializeAddress(j, "buybackFund", c.buybackFund);
         vm.serializeAddress(j, "devFund", c.devFund);
         vm.serializeAddress(j, "usdc", c.usdc);
         vm.serializeAddress(j, "uniswapV3Factory", o.uniFactory);
@@ -96,6 +104,7 @@ contract Deploy is Script {
         console2.log("FeeLocker        ", o.locker);
         console2.log("LaunchFactory    ", o.factory);
         console2.log("ecoFund (immutable)", c.ecoFund);
+        console2.log("buybackFund (immutable)", c.buybackFund);
         console2.log("devFund (immutable)", c.devFund);
     }
 }

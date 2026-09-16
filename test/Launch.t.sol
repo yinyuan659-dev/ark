@@ -69,22 +69,21 @@ contract LaunchTest is Base {
         factory.launch(p);
     }
 
-    /// @dev Every tunable param is bounded so a hostile owner cannot brick new launches.
-    function test_launch_paramBoundsEnforced() public {
-        vm.startPrank(owner);
-        vm.expectRevert(LaunchFactory.ParamOutOfRange.selector);
-        factory.setLaunchParams(10_000e6, 20, 0, 550, 5_000e6); // hold cap 0% → nobody could buy
-        vm.expectRevert(LaunchFactory.ParamOutOfRange.selector);
-        factory.setLaunchParams(10_000e6, 20, 500, 50, 5_000e6); // buy cap 0.5% < 1% floor
-        vm.expectRevert(LaunchFactory.ParamOutOfRange.selector);
-        factory.setLaunchParams(10_000e6, 7_201, 500, 550, 5_000e6); // window > ~1h
-        vm.expectRevert(LaunchFactory.ParamOutOfRange.selector);
-        factory.setLaunchParams(999e6, 20, 500, 550, 5_000e6); // graduation < 1000 USDC
-        factory.setLaunchParams(1_000e6, 7_200, 100, 100, 500e6); // all at the edges: ok
-        vm.stopPrank();
-        // and the tightest allowed settings still let a launch + first buy through
-        (address token,) = doLaunch(creator, "EDGE", 4e6); // 4 USDC into $500 mcap ≈ 0.8% of supply, under 1%
-        assertGt(LaunchToken(token).balanceOf(creator), 0);
+    /// @dev v2.11 (boss 9.16): launch params are constants — no setter exists, the owner has no function left on
+    ///      the factory, and the values are exactly what the docs promise.
+    function test_launch_paramsAreConstants() public {
+        assertEq(factory.graduationThreshold(), 10_000e6);
+        assertEq(factory.protectionBlocks(), 20);
+        assertEq(factory.maxHoldBps(), 500);
+        assertEq(factory.maxBuyBps(), 550);
+        assertEq(factory.startMcapUsdc(), 5_000e6);
+        // the old setter selector is gone: the call hits no function and reverts
+        vm.prank(owner);
+        (bool ok,) = address(factory).call(
+            abi.encodeWithSignature("setLaunchParams(uint256,uint256,uint16,uint16,uint256)", 1_000e6, 20, 500, 550, 5_000e6)
+        );
+        assertFalse(ok);
+        assertEq(factory.startMcapUsdc(), 5_000e6);
     }
 
     function test_launch_initialBuyGoesToCreator() public {
@@ -103,23 +102,6 @@ contract LaunchTest is Base {
             (address token, address pool) = doLaunch(creator, string.concat("S", vm.toString(i)), 0);
             assertApproxEqRel(spotMcap(token, pool), target, 0.03e18);
         }
-    }
-
-    /// @dev Admin can move the platform-wide opening mcap; it applies to launches after the change only.
-    function test_launch_adminChangesOpeningMcapForNewLaunchesOnly() public {
-        (address t1, address p1) = doLaunch(creator, "OLD", 0);
-        setStartMcap(20_000e6);
-        (address t2, address p2) = doLaunch(creator, "NEW", 0);
-        assertApproxEqRel(spotMcap(t1, p1), 5_000e6, 0.03e18);
-        assertApproxEqRel(spotMcap(t2, p2), 20_000e6, 0.03e18);
-
-        // bounds are enforced
-        vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(LaunchFactory.StartMcapOutOfRange.selector, 100e6));
-        factory.setLaunchParams(10_000e6, 20, 500, 550, 100e6);
-        vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(LaunchFactory.StartMcapOutOfRange.selector, 100_000_000e6));
-        factory.setLaunchParams(10_000e6, 20, 500, 550, 100_000_000e6);
     }
 
     /// @dev Token addresses come from CREATE2 (salt = creator, count, prev blockhash), so orientation flips
@@ -364,22 +346,20 @@ contract LaunchTest is Base {
     // ------------------------------------------------------------ graduation
 
     function test_graduation_flagAndEvent() public {
-        vm.prank(owner);
-        factory.setLaunchParams(1_000e6, 20, 500, 550, 5_000e6); // lowest allowed threshold for the test
         (address token, address pool) = doLaunch(creator, "MMM", 0);
 
         (uint256 paired, uint256 threshold, bool graduated) = factory.graduationStatus(token);
-        assertEq(threshold, 1_000e6);
+        assertEq(threshold, 10_000e6); // constant since v2.11
         assertEq(paired, 0);
         assertFalse(graduated);
         vm.expectRevert(LaunchFactory.NotGraduated.selector);
         factory.markGraduated(token);
 
         vm.roll(block.number + 30);
-        // several buyers so hold caps don't matter after the window anyway
-        buy(buyer, token, 1_200e6);
+        // after the window there are no caps, so one buyer can push the pool past the threshold
+        buy(buyer, token, 12_000e6);
         (paired,, graduated) = factory.graduationStatus(token);
-        assertGe(paired, 1_000e6);
+        assertGe(paired, 10_000e6);
         assertTrue(graduated);
         assertEq(usdc.balanceOf(pool), paired);
 
