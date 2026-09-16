@@ -28,6 +28,14 @@ contract Deploy is Script {
         address ecoFund;
         address buybackFund;
         address devFund;
+        // Reuse an existing Uniswap V3 core (UNI_FACTORY + UNI_NFPM) instead of deploying our own — on Arc mainnet the
+        // official Uniswap deployment (factory 0xf0db…3918) is what wallets / aggregators / Ave index, so pools must live
+        // there to be tradable outside our UI (2026-09-16 lesson). Our own SwapRouter / QuoterV2 (v1 ABI) are still
+        // deployed against that factory because the official periphery only ships SwapRouter02.
+        address uniFactory;
+        address nfpm;
+        // Reuse an existing Treasury (TREASURY) so a factory redeploy keeps one revenue contract.
+        address treasury;
     }
 
     struct Out {
@@ -49,6 +57,10 @@ contract Deploy is Script {
         c.ecoFund = vm.envOr("ECO_FUND", c.deployer);
         c.buybackFund = vm.envOr("BUYBACK_FUND", BUYBACK_PLACEHOLDER);
         c.devFund = vm.envOr("DEV_FUND", DEV_TEAM);
+        c.uniFactory = vm.envOr("UNI_FACTORY", address(0));
+        c.nfpm = vm.envOr("UNI_NFPM", address(0));
+        c.treasury = vm.envOr("TREASURY", address(0));
+        require((c.uniFactory == address(0)) == (c.nfpm == address(0)), "UNI_FACTORY and UNI_NFPM go together");
 
         vm.startBroadcast(pk);
         Out memory o = _deploy(c);
@@ -59,15 +71,22 @@ contract Deploy is Script {
     }
 
     function _deploy(Cfg memory c) internal returns (Out memory o) {
-        o.uniFactory = deployCode("vendor/uniswap-v3/UniswapV3Factory.json");
-        address descriptor = address(new SimpleDescriptor());
-        o.nfpm = deployCode(
-            "vendor/uniswap-v3/NonfungiblePositionManager.json", abi.encode(o.uniFactory, c.usdc, descriptor)
-        );
+        if (c.uniFactory != address(0)) {
+            o.uniFactory = c.uniFactory;
+            o.nfpm = c.nfpm;
+        } else {
+            o.uniFactory = deployCode("vendor/uniswap-v3/UniswapV3Factory.json");
+            address descriptor = address(new SimpleDescriptor());
+            o.nfpm = deployCode(
+                "vendor/uniswap-v3/NonfungiblePositionManager.json", abi.encode(o.uniFactory, c.usdc, descriptor)
+            );
+        }
         o.router = deployCode("vendor/uniswap-v3/SwapRouter.json", abi.encode(o.uniFactory, c.usdc));
         o.quoter = deployCode("vendor/uniswap-v3/QuoterV2.json", abi.encode(o.uniFactory, c.usdc));
 
-        o.treasury = address(new Treasury(c.usdc, o.router, c.ecoFund, c.buybackFund, c.devFund, c.owner));
+        o.treasury = c.treasury != address(0)
+            ? c.treasury
+            : address(new Treasury(c.usdc, o.router, c.ecoFund, c.buybackFund, c.devFund, c.owner));
         FeeLocker locker = new FeeLocker(o.nfpm, o.router, o.treasury, c.owner);
         o.locker = address(locker);
         o.factory = address(
